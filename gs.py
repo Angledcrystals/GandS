@@ -23,13 +23,64 @@ def project_3d_to_2d(G_3d, projection_type='xy'):
         return np.array([G_3d[1], G_3d[2]])
     elif projection_type == 'stereographic':
         # Stereographic projection from unit sphere
-        if G_3d[2] >= 1.0:
+        if G_3d[2] >= 1.0 - 1e-10:  # Near north pole
             return np.array([0, 0])
         denom = 1 - G_3d[2]
         return np.array([G_3d[0]/denom, G_3d[1]/denom])
     elif projection_type == 'orthographic':
         # Orthographic projection with viewing angle
         return np.array([G_3d[0]*0.8 + G_3d[2]*0.2, G_3d[1]*0.8 + G_3d[2]*0.2])
+
+def stereographic_inverse(S_2d):
+    """Recover 3D point from 2D stereographic projection - EXACT inversion"""
+    if np.linalg.norm(S_2d) < 1e-10:
+        # Point at origin maps to north pole
+        return np.array([0, 0, 1])
+    
+    norm_sq = np.dot(S_2d, S_2d)
+    denom = 1 + norm_sq
+    
+    x = 2 * S_2d[0] / denom
+    y = 2 * S_2d[1] / denom
+    z = (norm_sq - 1) / denom
+    
+    return np.array([x, y, z])
+
+def sacred_geometry_embedding(S_2d, embedding_type='golden_sphere'):
+    """Embed 2D S back to 3D using sacred geometry principles."""
+    if np.linalg.norm(S_2d) < 1e-10:
+        return np.array([0, 0, 1])
+    
+    if embedding_type == 'golden_sphere':
+        # Golden ratio height embedding
+        phi = (1 + np.sqrt(5)) / 2  # Golden ratio
+        z = 1/phi  # Golden ratio height
+        
+        # Scale S to fit on sphere at this height
+        max_radius_at_z = np.sqrt(1 - z**2)
+        s_norm = np.linalg.norm(S_2d)
+        if s_norm > 0:
+            scale = max_radius_at_z / s_norm
+            return np.array([S_2d[0] * scale, S_2d[1] * scale, z])
+        else:
+            return np.array([0, 0, z])
+    
+    elif embedding_type == 'unit_sphere':
+        # Project onto unit sphere
+        s_norm = np.linalg.norm(S_2d)
+        if s_norm > 0:
+            # Use S magnitude to determine Z coordinate
+            z = np.tanh(s_norm - 1)  # Maps [0,∞) to [-1,1) smoothly
+            max_radius = np.sqrt(1 - z**2)
+            scale = max_radius / s_norm
+            return np.array([S_2d[0] * scale, S_2d[1] * scale, z])
+        else:
+            return np.array([0, 0, 0])
+    
+    elif embedding_type == 'cone':
+        # Cone embedding - S becomes base, height from magnitude
+        height = np.tanh(np.linalg.norm(S_2d))  # Bounded height
+        return np.array([S_2d[0], S_2d[1], height])
 
 def calculate_psi_3d_2d(G_3d, S_2d, alpha, beta):
     """Calculate Ψ combining 3D G and 2D S."""
@@ -60,10 +111,10 @@ def check_on_nuit_boundary(point, radius=1.0, tolerance=0.05):
 
 def main():
     # Create figure with subplots for 3D and 2D views
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(20, 10))
     
     # 3D subplot for G vector
-    ax1 = fig.add_subplot(121, projection='3d')
+    ax1 = fig.add_subplot(131, projection='3d')
     ax1.set_xlim(-1.5, 1.5)
     ax1.set_ylim(-1.5, 1.5)
     ax1.set_zlim(-1.5, 1.5)
@@ -73,7 +124,7 @@ def main():
     ax1.set_title('3D G Vector Space')
     
     # 2D subplot for S projection and Psi
-    ax2 = fig.add_subplot(122)
+    ax2 = fig.add_subplot(132)
     ax2.set_xlim(-2, 2)
     ax2.set_ylim(-2, 2)
     ax2.set_aspect('equal')
@@ -82,7 +133,17 @@ def main():
     ax2.axvline(x=0, color='k', linestyle='-', alpha=0.3)
     ax2.set_title('2D S Projection Space with Nuit Boundary')
     
-    plt.subplots_adjust(left=0.25, bottom=0.4)
+    # 3D subplot for S reconstruction
+    ax3 = fig.add_subplot(133, projection='3d')
+    ax3.set_xlim(-1.5, 1.5)
+    ax3.set_ylim(-1.5, 1.5)
+    ax3.set_zlim(-1.5, 1.5)
+    ax3.set_xlabel('X')
+    ax3.set_ylabel('Y')
+    ax3.set_zlabel('Z')
+    ax3.set_title('3D S Reconstruction')
+    
+    plt.subplots_adjust(left=0.25, bottom=0.45)
     
     # Initial values
     initial_theta = np.pi/4  # 45 degrees
@@ -92,7 +153,7 @@ def main():
     initial_alpha = 0.5
     initial_beta = 0.5
     initial_nuit_radius = 1.0
-    projection_type = 'xy'
+    projection_type = 'stereographic'  # Default to stereographic for reconstruction
     
     # Initial 3D G vector
     G_3d = spherical_to_cartesian(initial_theta, initial_phi)
@@ -107,65 +168,38 @@ def main():
     # Calculate Psi
     psi_2d = calculate_psi_3d_2d(G_3d, S_2d, initial_alpha, initial_beta)
     
-    # Draw 3D elements
-    # Unit sphere wireframe
-    u = np.linspace(0, 2 * np.pi, 20)
-    v = np.linspace(0, np.pi, 20)
-    x_sphere = np.outer(np.cos(u), np.sin(v))
-    y_sphere = np.outer(np.sin(u), np.sin(v))
-    z_sphere = np.outer(np.ones(np.size(u)), np.cos(v))
-    ax1.plot_wireframe(x_sphere, y_sphere, z_sphere, alpha=0.1, color='gray')
+    # Draw initial 3D elements
+    def draw_3d_sphere(ax, alpha=0.1):
+        u = np.linspace(0, 2 * np.pi, 20)
+        v = np.linspace(0, np.pi, 20)
+        x_sphere = np.outer(np.cos(u), np.sin(v))
+        y_sphere = np.outer(np.sin(u), np.sin(v))
+        z_sphere = np.outer(np.ones(np.size(u)), np.cos(v))
+        ax.plot_wireframe(x_sphere, y_sphere, z_sphere, alpha=alpha, color='gray')
     
-    # 3D vectors
-    G_arrow_3d = ax1.quiver(0, 0, 0, G_3d[0], G_3d[1], G_3d[2], 
-                           color='green', arrow_length_ratio=0.1, linewidth=3, label='G (3D)')
-    hadit_arrow_3d = ax1.quiver(0, 0, 0, hadit_3d[0], hadit_3d[1], hadit_3d[2], 
-                               color='black', arrow_length_ratio=0.1, linewidth=2, 
-                               linestyle='--', alpha=0.7, label='Hadit (3D)')
-    G_reflected_arrow = ax1.quiver(0, 0, 0, G_reflected[0], G_reflected[1], G_reflected[2], 
-                                  color='orange', arrow_length_ratio=0.1, linewidth=2, 
-                                  alpha=0.7, label='G Reflected')
-    
-    # 2D elements - Nuit boundary circle
-    nuit_circle = plt.Circle((0, 0), initial_nuit_radius, fill=False, color='blue', 
-                            linewidth=2, linestyle='-', label='Nuit Boundary')
-    ax2.add_patch(nuit_circle)
-    
-    # 2D vectors
-    S_arrow_2d = ax2.quiver(0, 0, S_2d[0], S_2d[1], angles='xy', scale_units='xy', 
-                           scale=1, color='red', label='S (2D Projection)', width=0.005)
-    psi_arrow_2d = ax2.quiver(0, 0, psi_2d[0], psi_2d[1], angles='xy', scale_units='xy', 
-                             scale=1, color='purple', label='Ψ (2D)', width=0.005)
-    G_proj_arrow = ax2.quiver(0, 0, project_3d_to_2d(G_3d)[0], project_3d_to_2d(G_3d)[1], 
-                             angles='xy', scale_units='xy', scale=1, color='lightgreen', 
-                             alpha=0.5, label='G Projection', width=0.003)
-    
-    # Mark S endpoint
-    on_boundary, dist_from_origin, dist_from_circle = check_on_nuit_boundary(S_2d, initial_nuit_radius)
-    S_point = ax2.plot(S_2d[0], S_2d[1], 'ro', markersize=8, 
-                      markerfacecolor='red' if on_boundary else 'white',
-                      markeredgecolor='red', markeredgewidth=2, label='S endpoint')[0]
-    
-    ax1.legend()
-    ax2.legend()
+    draw_3d_sphere(ax1)
+    draw_3d_sphere(ax3)
     
     # Sliders
     slider_height = 0.02
     slider_spacing = 0.03
-    slider_width = 0.35
+    slider_width = 0.25
     left_col = 0.05
-    right_col = 0.55
+    mid_col = 0.35
+    right_col = 0.65
     
     # Left column sliders
-    ax_theta = plt.axes([left_col, 0.3, slider_width, slider_height])
-    ax_phi = plt.axes([left_col, 0.3 - slider_spacing, slider_width, slider_height])
-    ax_hadit_theta = plt.axes([left_col, 0.3 - 2*slider_spacing, slider_width, slider_height])
-    ax_hadit_phi = plt.axes([left_col, 0.3 - 3*slider_spacing, slider_width, slider_height])
+    ax_theta = plt.axes([left_col, 0.35, slider_width, slider_height])
+    ax_phi = plt.axes([left_col, 0.35 - slider_spacing, slider_width, slider_height])
+    ax_hadit_theta = plt.axes([left_col, 0.35 - 2*slider_spacing, slider_width, slider_height])
     
-    # Right column sliders
-    ax_alpha = plt.axes([right_col, 0.3, slider_width, slider_height])
-    ax_beta = plt.axes([right_col, 0.3 - slider_spacing, slider_width, slider_height])
-    ax_nuit_radius = plt.axes([right_col, 0.3 - 2*slider_spacing, slider_width, slider_height])
+    # Middle column sliders
+    ax_hadit_phi = plt.axes([mid_col, 0.35, slider_width, slider_height])
+    ax_alpha = plt.axes([mid_col, 0.35 - slider_spacing, slider_width, slider_height])
+    ax_beta = plt.axes([mid_col, 0.35 - 2*slider_spacing, slider_width, slider_height])
+    
+    # Right column slider
+    ax_nuit_radius = plt.axes([right_col, 0.35, slider_width, slider_height])
     
     s_theta = Slider(ax_theta, 'G θ (azimuth)', 0, 2*np.pi, valinit=initial_theta)
     s_phi = Slider(ax_phi, 'G φ (polar)', 0, np.pi, valinit=initial_phi)
@@ -180,6 +214,14 @@ def main():
     proj_button = RadioButtons(
         ax_proj,
         ('XY Plane', 'XZ Plane', 'YZ Plane', 'Stereographic', 'Orthographic'),
+        active=3  # Default to Stereographic
+    )
+    
+    # Reconstruction method buttons
+    ax_recon = plt.axes([0.25, 0.05, 0.15, 0.15])
+    recon_button = RadioButtons(
+        ax_recon,
+        ('Stereographic Inverse', 'Golden Sphere', 'Unit Sphere', 'Cone'),
         active=0
     )
     
@@ -201,16 +243,32 @@ def main():
         # Update 2D projections
         proj_map = {'XY Plane': 'xy', 'XZ Plane': 'xz', 'YZ Plane': 'yz', 
                    'Stereographic': 'stereographic', 'Orthographic': 'orthographic'}
-        current_proj = proj_map.get(proj_button.value_selected, 'xy')
+        current_proj = proj_map.get(proj_button.value_selected, 'stereographic')
         
         S_2d = project_3d_to_2d(G_reflected, current_proj)
         G_proj_2d = project_3d_to_2d(G_3d, current_proj)
         psi_2d = calculate_psi_3d_2d(G_3d, S_2d, alpha, beta)
         
+        # Calculate 3D reconstruction of S
+        recon_map = {
+            'Stereographic Inverse': 'stereographic',
+            'Golden Sphere': 'golden_sphere',
+            'Unit Sphere': 'unit_sphere',
+            'Cone': 'cone'
+        }
+        recon_method = recon_map.get(recon_button.value_selected, 'stereographic')
+        
+        if recon_method == 'stereographic' and current_proj == 'stereographic':
+            S_3d_reconstructed = stereographic_inverse(S_2d)
+            reconstruction_error = np.linalg.norm(G_reflected - S_3d_reconstructed)
+        else:
+            S_3d_reconstructed = sacred_geometry_embedding(S_2d, recon_method)
+            reconstruction_error = np.linalg.norm(G_reflected - S_3d_reconstructed)
+        
         # Check if S is on Nuit boundary
         on_boundary, dist_from_origin, dist_from_circle = check_on_nuit_boundary(S_2d, nuit_radius)
         
-        # Update 3D plot
+        # Update 3D plot (original vectors)
         ax1.clear()
         ax1.set_xlim(-1.5, 1.5)
         ax1.set_ylim(-1.5, 1.5)
@@ -219,13 +277,7 @@ def main():
         ax1.set_ylabel('Y')
         ax1.set_zlabel('Z')
         
-        # Redraw sphere
-        u = np.linspace(0, 2 * np.pi, 20)
-        v = np.linspace(0, np.pi, 20)
-        x_sphere = np.outer(np.cos(u), np.sin(v))
-        y_sphere = np.outer(np.sin(u), np.sin(v))
-        z_sphere = np.outer(np.ones(np.size(u)), np.cos(v))
-        ax1.plot_wireframe(x_sphere, y_sphere, z_sphere, alpha=0.1, color='gray')
+        draw_3d_sphere(ax1)
         
         # Draw 3D vectors
         ax1.quiver(0, 0, 0, G_3d[0], G_3d[1], G_3d[2], 
@@ -238,7 +290,7 @@ def main():
                   alpha=0.7, label='G Reflected')
         
         ax1.legend()
-        ax1.set_title(f'3D G Vector Space\nG={G_3d.round(2)}, G_refl={G_reflected.round(2)}')
+        ax1.set_title(f'3D G Vector Space\nG={G_3d.round(3)}\nG_refl={G_reflected.round(3)}')
         
         # Update 2D plot
         ax2.clear()
@@ -262,38 +314,80 @@ def main():
         ax2.quiver(0, 0, G_proj_2d[0], G_proj_2d[1], angles='xy', scale_units='xy', 
                   scale=1, color='lightgreen', alpha=0.5, label='G Projection', width=0.003)
         
-        # Mark S endpoint with different styles based on boundary position
+        # Mark S endpoint
         if on_boundary:
-            # Solid red circle if on boundary
-            ax2.plot(S_2d[0], S_2d[1], 'ro', markersize=10, 
+            ax2.plot(S_2d[0], S_2d[1], 'ro', markersize=12, 
                     markerfacecolor='red', markeredgecolor='darkred', 
-                    markeredgewidth=2, label='S (ON Nuit)')
+                    markeredgewidth=3, label='S (ON Nuit)', zorder=5)
         else:
-            # Hollow circle if off boundary
             ax2.plot(S_2d[0], S_2d[1], 'ro', markersize=10, 
                     markerfacecolor='white', markeredgecolor='red', 
                     markeredgewidth=2, label='S (OFF Nuit)')
         
-        # Add distance indicators
         boundary_status = "ON" if on_boundary else "OFF"
         status_color = "green" if on_boundary else "red"
         
         ax2.legend()
-        ax2.set_title(f'2D S Projection Space ({current_proj})\n'
-                     f'S={S_2d.round(2)}, Ψ={psi_2d.round(2)}\n'
-                     f'S is {boundary_status} Nuit boundary (dist: {dist_from_circle:.3f})', 
+        ax2.set_title(f'2D S Projection ({current_proj})\n'
+                     f'S={S_2d.round(3)}, Ψ={psi_2d.round(3)}\n'
+                     f'S is {boundary_status} Nuit boundary', 
                      color=status_color)
         
-        # Add text annotation showing distances
-        ax2.text(0.02, 0.98, f'|S| = {dist_from_origin:.3f}\n'
-                            f'Nuit radius = {nuit_radius:.3f}\n'
-                            f'Distance from boundary = {dist_from_circle:.3f}',
+        # Update 3D reconstruction plot
+        ax3.clear()
+        ax3.set_xlim(-1.5, 1.5)
+        ax3.set_ylim(-1.5, 1.5)
+        ax3.set_zlim(-1.5, 1.5)
+        ax3.set_xlabel('X')
+        ax3.set_ylabel('Y')
+        ax3.set_zlabel('Z')
+        
+        draw_3d_sphere(ax3)
+        
+        # Draw original G_reflected for comparison
+        ax3.quiver(0, 0, 0, G_reflected[0], G_reflected[1], G_reflected[2], 
+                  color='orange', arrow_length_ratio=0.1, linewidth=2, 
+                  alpha=0.5, label='G Reflected (original)', linestyle='--')
+        
+        # Draw reconstructed S
+        ax3.quiver(0, 0, 0, S_3d_reconstructed[0], S_3d_reconstructed[1], S_3d_reconstructed[2], 
+                  color='red', arrow_length_ratio=0.1, linewidth=3, 
+                  label=f'S Reconstructed ({recon_method})')
+        
+        # Highlight if S is on Nuit boundary
+        if on_boundary:
+            ax3.scatter([S_3d_reconstructed[0]], [S_3d_reconstructed[1]], [S_3d_reconstructed[2]], 
+                       color='gold', s=100, marker='*', label='Nuit Alignment!', zorder=5)
+        
+        ax3.legend()
+        title_color = 'green' if on_boundary else 'black'
+        reconstruction_quality = "PERFECT" if reconstruction_error < 1e-10 else f"Error: {reconstruction_error:.6f}"
+        
+        ax3.set_title(f'3D S Reconstruction ({recon_button.value_selected})\n'
+                     f'S_3D={S_3d_reconstructed.round(3)}\n'
+                     f'{reconstruction_quality}', color=title_color)
+        
+        # Add comprehensive info box
+        info_text = (f'|S_2D| = {dist_from_origin:.3f}\n'
+                    f'Nuit radius = {nuit_radius:.3f}\n'
+                    f'Boundary distance = {dist_from_circle:.6f}\n'
+                    f'Reconstruction error = {reconstruction_error:.6f}\n'
+                    f'Projection: {current_proj}\n'
+                    f'Reconstruction: {recon_method}')
+        
+        if on_boundary:
+            info_text += '\n*** S ALIGNS WITH NUIT! ***'
+        
+        ax2.text(0.02, 0.98, info_text,
                 transform=ax2.transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                bbox=dict(boxstyle='round', facecolor='lightgreen' if on_boundary else 'wheat', alpha=0.8))
         
         fig.canvas.draw_idle()
     
     def change_projection(label):
+        update()
+    
+    def change_reconstruction(label):
         update()
     
     # Connect events
@@ -305,6 +399,7 @@ def main():
     s_beta.on_changed(update)
     s_nuit_radius.on_changed(update)
     proj_button.on_clicked(change_projection)
+    recon_button.on_clicked(change_reconstruction)
     
     # Initial update
     update()
